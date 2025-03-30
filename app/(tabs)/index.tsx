@@ -1,5 +1,5 @@
-import React from 'react';
-import { Button, View, StyleSheet, BackHandler, Text } from 'react-native';
+import React, { useState } from 'react';
+import { Button, View, StyleSheet, BackHandler, Text, KeyboardAvoidingView, Platform } from 'react-native';
 import { WebView } from 'react-native-webview';
 import { useFocusEffect } from '@react-navigation/native';
 import { createStackNavigator } from '@react-navigation/stack';
@@ -39,6 +39,11 @@ const disableSelectionAndCopyScript = `
   
   // Disable long-press popup on mobile
   document.addEventListener('touchstart', function(e) {
+    // Skip for input fields to allow normal keyboard behavior
+    if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA' || e.target.isContentEditable) {
+      return true;
+    }
+    
     // This prevents the long-press from activating
     // We're using a short timeout to distinguish between taps and long-presses
     const target = e.target;
@@ -65,14 +70,29 @@ const disableSelectionAndCopyScript = `
     }
   }, true);
   
-  // Prevent selection popups
+  // Prevent selection popups, but not for input fields
   document.addEventListener('selectionchange', function(e) {
     if (window.getSelection) {
-      if (window.getSelection().empty) {
-        window.getSelection().empty();
-      } else if (window.getSelection().removeAllRanges) {
-        window.getSelection().removeAllRanges();
+      const selection = window.getSelection();
+      const activeEl = document.activeElement;
+      
+      // Allow selection in input fields and textareas
+      if (activeEl && (activeEl.tagName === 'INPUT' || activeEl.tagName === 'TEXTAREA' || activeEl.isContentEditable)) {
+        return true;
       }
+      
+      if (selection.empty) {
+        selection.empty();
+      } else if (selection.removeAllRanges) {
+        selection.removeAllRanges();
+      }
+    }
+  }, false);
+
+  // Fix for iOS to ensure inputs are focusable
+  document.addEventListener('click', function(e) {
+    if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') {
+      e.target.focus();
     }
   }, false);
 })();
@@ -83,6 +103,7 @@ true;
 const WebViewScreen = ({ navigation }: any) => {
   let webViewRef: WebView | null = null;
   let canGoBack = false;
+  const [keyboardVisible, setKeyboardVisible] = useState(false);
 
   // Handle back button press for WebView
   useFocusEffect(
@@ -103,30 +124,65 @@ const WebViewScreen = ({ navigation }: any) => {
     }, [canGoBack])
   );
 
+  // Script to detect keyboard visibility
+  const keyboardDetectionScript = `
+    window.addEventListener('focus', function(e) {
+      if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA' || e.target.isContentEditable) {
+        window.ReactNativeWebView.postMessage(JSON.stringify({type: 'keyboardVisible', value: true}));
+      }
+    }, true);
+    
+    window.addEventListener('blur', function(e) {
+      if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA' || e.target.isContentEditable) {
+        window.ReactNativeWebView.postMessage(JSON.stringify({type: 'keyboardVisible', value: false}));
+      }
+    }, true);
+  `;
+
+  // Handle messages from WebView
+  const handleWebViewMessage = (event: any) => {
+    try {
+      const data = JSON.parse(event.nativeEvent.data);
+      if (data.type === 'keyboardVisible') {
+        setKeyboardVisible(data.value);
+      }
+    } catch (error) {
+      console.log('Error parsing WebView message:', error);
+    }
+  };
+
   return (
-    <View style={styles.container}>
-      
+    <KeyboardAvoidingView 
+      style={styles.container}
+      behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+      keyboardVerticalOffset={Platform.OS === 'ios' ? 40 : 0}
+    >
       <WebView
         ref={(ref) => (webViewRef = ref)}
         source={{ uri: 'https://student-payment-manager.vercel.app/' }}
         style={styles.webview}
-        injectedJavaScript={disableSelectionAndCopyScript}
+        injectedJavaScript={disableSelectionAndCopyScript + keyboardDetectionScript}
         onNavigationStateChange={(navState) => {
           canGoBack = navState.canGoBack;
         }}
-        // Disable built-in WebView selection capabilities
-        textInteractionWithFormattedText={false}
-        // Apply these additional props to further restrict selection
+        onMessage={handleWebViewMessage}
+        
+        // Allow keyboard to open for inputs but still disable selection elsewhere
+        textInteractionWithFormattedText={true}
         selectTextOnLongPress={false}
-        contextMenuDisabled={true}
+        contextMenuDisabled={false}
+        keyboardDisplayRequiresUserAction={false} // Important for iOS to allow focusing inputs
+        
+        // These settings help with form inputs
+        allowsInlineMediaPlayback={true}
+        mediaPlaybackRequiresUserAction={false}
+        scrollEnabled={true}
+        
+        // Make sure JS is enabled
+        javaScriptEnabled={true}
+        domStorageEnabled={true}
       />
-      {/* <Button
-        title="Go to Another Screen"
-        onPress={() => navigation.navigate('AnotherScreen')}
-      /> */}
-      
-
-    </View>
+    </KeyboardAvoidingView>
   );
 };
 
@@ -164,7 +220,7 @@ const AppNavigator = () => {
   return (
     <Stack.Navigator initialRouteName="WebView">
       <Stack.Screen name="WebView" component={WebViewScreen} 
-      options={{ headerShown: false }} // Hides the header title
+        options={{ headerShown: false }} // Hides the header title
       />
       <Stack.Screen name="AnotherScreen" component={AnotherScreen} />
     </Stack.Navigator>
@@ -179,7 +235,6 @@ const styles = StyleSheet.create({
   },
   webview: {
     flex: 1,
-    
   },
   noSelect: {
     fontSize: 16,
